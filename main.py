@@ -4,6 +4,8 @@ import logging
 import asyncio
 from aiohttp import web
 from gtts import gTTS
+import speech_recognition as sr
+from pydub import AudioSegment
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
     ApplicationBuilder,
@@ -68,15 +70,15 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_name = LANGUAGES.get(current_code, "🇮🇳 Malayalam")
 
     welcome_text = (
-        "🌐 **Universal Language Translator & Voice Bot**\n\n"
-        f"🎯 **Active Target Language:** {current_name}\n\n"
-        "👇 **Tap a language below to change translation output:**\n"
-        "⭐️ Type `/buy` to support with Telegram Stars!"
+        "🌐 **Universal Translator & Voice Bot**\n\n"
+        f"🎯 **Target Language:** {current_name}\n\n"
+        "💬 Send **text** or 🎙️ send a **voice message** in any language!\n\n"
+        "👇 **Select target language:**"
     )
     await update.message.reply_text(welcome_text, reply_markup=get_language_keyboard(), parse_mode="Markdown")
 
 async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 Status: **RUNNING (ON)**\nTranslation and Voice engine ready.", parse_mode="Markdown")
+    await update.message.reply_text("🟢 Status: **RUNNING (ON)**\nText and Voice translation active.", parse_mode="Markdown")
 
 async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -88,13 +90,12 @@ async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await query.edit_message_text(
         f"✅ **Language set to:** {lang_name}\n\n"
-        "💬 Send text in **any language**—I will translate and send voice audio!",
+        "🎙️ Send a voice message or type text to translate!",
         reply_markup=get_language_keyboard(),
         parse_mode="Markdown"
     )
 
 def safe_translate(text: str, target: str) -> str:
-    """Translates text with fallback engines to prevent Error 500."""
     try:
         res = GoogleTranslator(source="auto", target=target).translate(text)
         if res and "Error 500" not in res:
@@ -103,43 +104,65 @@ def safe_translate(text: str, target: str) -> str:
         pass
 
     try:
-        # Fallback to MyMemory if Google encounters rate-limits
         res = MyMemoryTranslator(source="auto", target=target).translate(text)
         if res:
             return res
     except Exception as e:
-        logging.error(f"MyMemory fallback error: {e}")
-    
+        logging.error(f"Fallback error: {e}")
     return ""
 
-async def translate_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    if not user_text:
-        return
-
+async def send_translated_response(update: Update, context: ContextTypes.DEFAULT_TYPE, original_text: str):
     target = context.user_data.get("target_lang", "ml")
     target_name = LANGUAGES.get(target, target)
 
-    translated = safe_translate(user_text, target)
-
+    translated = safe_translate(original_text, target)
     if not translated:
-        await update.message.reply_text("⚠️ Translation server was busy. Please send the message again.")
+        await update.message.reply_text("⚠️ Translation failed. Please try again.")
         return
 
-    # Send translated text
+    # Reply with text
     await update.message.reply_text(f"🔤 **[{target_name}]**\n\n{translated}", parse_mode="Markdown")
 
-    # Generate and send audio pronunciation
+    # Reply with voice audio
     try:
-        # Standardize language code for gTTS
         tts_lang = "zh-CN" if target == "zh-CN" else target.split("-")[0]
         fp = io.BytesIO()
         tts = gTTS(text=translated, lang=tts_lang)
         tts.write_to_fp(fp)
         fp.seek(0)
         await update.message.reply_voice(voice=fp)
-    except Exception as tts_err:
-        logging.warning(f"Voice generation skipped for {target}: {tts_err}")
+    except Exception as e:
+        logging.warning(f"Voice generation skipped: {e}")
+
+async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_translated_response(update, context, update.message.text)
+
+async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Downloads user voice message, transcribes it, and translates it."""
+    try:
+        voice_file = await update.message.voice.get_file()
+        ogg_bytes = await voice_file.download_as_bytearray()
+
+        # Convert OGG to WAV
+        audio = AudioSegment.from_file(io.BytesIO(ogg_bytes), format="ogg")
+        wav_io = io.BytesIO()
+        audio.export(wav_io, format="wav")
+        wav_io.seek(0)
+
+        # Recognize Speech
+        recognizer = sr.Recognizer()
+        with sr.AudioFile(wav_io) as source:
+            audio_data = recognizer.record(source)
+            text = recognizer.recognize_google(audio_data)
+
+        await update.message.reply_text(f"🗣️ **Heard:** _{text}_", parse_mode="Markdown")
+        await send_translated_response(update, context, text)
+
+    except sr.UnknownValueError:
+        await update.message.reply_text("🎙️ Could not clearly recognize the speech. Please speak louder or send text.")
+    except Exception as e:
+        logging.error(f"Voice error: {e}")
+        await update.message.reply_text("⚠️ Could not process voice note. Please send clear audio or text.")
 
 async def send_stars_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     prices = [LabeledPrice("VIP Access", 25)]
@@ -168,9 +191,6 @@ async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎉 **Payment Received!** VIP access active. ⭐️", parse_mode="Markdown")
 
-async def handle_non_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("ℹ️ Please send text messages for translation.")
-
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
@@ -185,20 +205,23 @@ async def start_web_server():
 
 async def main():
     if not TOKEN:
-        raise ValueError("BOT_TOKEN environment variable is not set!")
+        raise ValueError("BOT_TOKEN is missing!")
 
     await start_web_server()
 
     bot_app = ApplicationBuilder().token(TOKEN).build()
+
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CommandHandler("status", status))
     bot_app.add_handler(CommandHandler("buy", buy_command))
     bot_app.add_handler(CallbackQueryHandler(stars_button_click, pattern="^buy_stars_btn$"))
     bot_app.add_handler(CallbackQueryHandler(language_selected, pattern="^setlang_"))
+
     bot_app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
     bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_message))
-    bot_app.add_handler(MessageHandler(~filters.TEXT & ~filters.COMMAND, handle_non_text))
+
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
+    bot_app.add_handler(MessageHandler(filters.VOICE, handle_voice))
 
     async with bot_app:
         await bot_app.start()
