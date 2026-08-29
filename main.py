@@ -6,8 +6,6 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from google import genai
 from gtts import gTTS
-except ImportError:
-    from gTTS import gTTS
 import gtts.lang
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
 from telegram.ext import (
