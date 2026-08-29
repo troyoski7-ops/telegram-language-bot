@@ -2,4 +2,7 @@ python-telegram-bot
 deep-translator
 gTTS
 aiohttp
+SpeechRecognition
+pydub
+
 
