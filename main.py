@@ -5,7 +5,7 @@ import threading
 import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from gtts import gTTS
-from telegram import Update
+from telegram import Update, BotCommand
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
@@ -17,34 +17,63 @@ from telegram.ext import (
 # --- CONFIGURATION ---
 GEMINI_API_KEY = os.environ.get(
     "GEMINI_API_KEY",
-    "AQ.Ab8RN6KFTZJe90GANt5eRpki_j0j_MeizdW-FwknVz37gBIizQ"
+    "AQ.Ab8RN6IERW99GmIEEcXjveKYRX-NA35ij2dlkTaB6s35Q9_DOA"
 )
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
     "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ"
 )
 
-# Simple web server to keep Render service alive
+# Global bot state (ON by default)
+BOT_ACTIVE = True
+
+# --- RENDER KEEP-ALIVE SERVER ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
         self.end_headers()
-        self.wfile.write(b"Bot is active!")
+        self.wfile.write(b"Bot is active and running!")
 
 def run_server():
     port = int(os.environ.get("PORT", 8080))
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
-# --- BOT HANDLERS ---
+# --- COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    BOT_ACTIVE = True
     welcome_text = (
-        "🚀 *Language Bot Ready!*\n\n"
-        "Send me any text in Russian, German, or English and I will translate, explain, and provide pronunciation audio!"
+        "🟢 *Bot is now ON & ACTIVE!*\n\n"
+        "Send any Russian, German, or English text and I will translate it to Malayalam and English with audio pronunciation.\n\n"
+        "• `/stop` — Turn bot OFF\n"
+        "• `/start` — Turn bot ON\n"
+        "• `/status` — Check status"
     )
     await update.message.reply_text(welcome_text, parse_mode="Markdown")
 
+async def stop_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    BOT_ACTIVE = False
+    stop_text = (
+        "🔴 *Bot is now OFF (PAUSED)*\n\n"
+        "I will ignore messages until you send `/start`."
+    )
+    await update.message.reply_text(stop_text, parse_mode="Markdown")
+
+async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    if BOT_ACTIVE:
+        msg = "🟢 Status: *RUNNING (ON)*\nReady to translate."
+    else:
+        msg = "🔴 Status: *STOPPED (OFF)*\nSend `/start` to activate."
+    await update.message.reply_text(msg, parse_mode="Markdown")
+
+# --- MESSAGE HANDLER ---
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    global BOT_ACTIVE
+    if not BOT_ACTIVE:
+        return
+
     user_text = update.message.text
     if not user_text:
         return
@@ -59,9 +88,11 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        # Direct REST API call bypassing SDK auth restrictions
-        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
-        headers = {"Content-Type": "application/json"}
+        url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
+        headers = {
+            "Content-Type": "application/json",
+            "x-goog-api-key": GEMINI_API_KEY
+        }
         payload = {
             "contents": [{
                 "parts": [{"text": prompt}]
@@ -79,7 +110,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Could not generate a response.")
 
-        # Generate audio pronunciation
+        # Audio Pronunciation
         try:
             tts = gTTS(text=user_text, lang='ru')
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -95,11 +126,29 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
+# --- AUTO REGISTER COMMAND MENU ---
+async def post_init(application):
+    commands = [
+        BotCommand("start", "Turn bot ON and start translating"),
+        BotCommand("stop", "Turn bot OFF (pause translations)"),
+        BotCommand("status", "Check ON/OFF status"),
+    ]
+    await application.bot.set_my_commands(commands)
+
 def main():
     threading.Thread(target=run_server, daemon=True).start()
     
-    app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
+    app = (
+        ApplicationBuilder()
+        .token(TELEGRAM_BOT_TOKEN)
+        .post_init(post_init)
+        .build()
+    )
+    
+    # Handlers
     app.add_handler(CommandHandler("start", start_command))
+    app.add_handler(CommandHandler("stop", stop_command))
+    app.add_handler(CommandHandler("status", status_command))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
     
     print("Bot is starting...")
