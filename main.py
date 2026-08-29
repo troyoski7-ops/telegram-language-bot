@@ -21,7 +21,7 @@ GEMINI_API_KEY = os.environ.get(
 )
 TELEGRAM_BOT_TOKEN = os.environ.get(
     "TELEGRAM_BOT_TOKEN",
-    "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ"
+    "8979035511:AAHGkERqUcEQunaF3eTwkOMLNjr1x33rAzs"
 )
 
 # Global bot state (ON by default)
