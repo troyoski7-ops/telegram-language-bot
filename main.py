@@ -2,6 +2,8 @@ import os
 import io
 import logging
 import asyncio
+import urllib.parse
+import requests
 from aiohttp import web
 from gtts import gTTS
 from deep_translator import GoogleTranslator, MyMemoryTranslator
@@ -10,12 +12,14 @@ from telegram import (
     Update,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    LabeledPrice,
 )
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
+    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
@@ -28,20 +32,32 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ")
 
-# Supported Languages
+# All Languages (Extended with Tajik & Hebrew/Israel)
 LANGUAGES = {
     "en": "🇬🇧 English",
     "ml": "🇮🇳 Malayalam",
+    "ta": "🇮🇳 Tamil",
+    "te": "🇮🇳 Telugu",
+    "kn": "🇮🇳 Kannada",
+    "bn": "🇮🇳 Bengali",
     "hi": "🇮🇳 Hindi",
-    "it": "🇮🇹 Italian",
+    "ur": "🇵🇰 Urdu",
+    "he": "🇮🇱 Hebrew (Israel)",
+    "tg": "🇹🇯 Tajik (Tajikistan)",
+    "my": "🇲🇲 Burmese",
+    "vi": "🇻🇳 Vietnamese",
+    "es": "🇲🇽 Spanish (Mexican)",
     "de": "🇩🇪 German",
     "ru": "🇷🇺 Russian",
     "fr": "🇫🇷 French",
-    "es": "🇪🇸 Spanish",
+    "it": "🇮🇹 Italian",
+    "pt": "🇧🇷 Portuguese",
+    "no": "🇳🇴 Norwegian",
+    "sv": "🇸🇪 Swedish",
+    "pl": "🇵🇱 Polish",
     "ar": "🇪🇬 Arabic",
     "fa": "🇮🇷 Persian",
     "tr": "🇹🇷 Turkish",
-    "pt": "🇧🇷 Portuguese",
     "zh-CN": "🇨🇳 Chinese",
     "ja": "🇯🇵 Japanese",
     "ko": "🇰🇷 Korean",
@@ -50,14 +66,37 @@ LANGUAGES = {
     "uz": "🇺🇿 Uzbek",
     "kk": "🇰🇿 Kazakh",
     "az": "🇦🇿 Azerbaijani",
-    "ur": "🇵🇰 Urdu",
 }
 
+# gTTS Supported Language Codes
 TTS_MAP = {
-    "en": "en", "ml": "ml", "hi": "hi", "it": "it", "de": "de",
-    "ru": "ru", "fr": "fr", "es": "es", "ar": "ar", "tr": "tr",
-    "pt": "pt", "zh-CN": "zh-CN", "ja": "ja", "ko": "ko",
-    "id": "id", "uk": "uk", "ur": "ur",
+    "en": "en",
+    "ml": "ml",
+    "ta": "ta",
+    "te": "te",
+    "kn": "kn",
+    "bn": "bn",
+    "hi": "hi",
+    "ur": "ur",
+    "he": "iw",  # Hebrew gTTS code
+    "my": "my",
+    "vi": "vi",
+    "es": "es",
+    "de": "de",
+    "ru": "ru",
+    "fr": "fr",
+    "it": "it",
+    "pt": "pt",
+    "no": "no",
+    "sv": "sv",
+    "pl": "pl",
+    "ar": "ar",
+    "tr": "tr",
+    "zh-CN": "zh-CN",
+    "ja": "ja",
+    "ko": "ko",
+    "id": "id",
+    "uk": "uk",
 }
 
 def init_user_data(context: ContextTypes.DEFAULT_TYPE):
@@ -81,7 +120,7 @@ def get_settings_text(context: ContextTypes.DEFAULT_TYPE) -> str:
         f"🌐 **My Language:** {LANGUAGES.get(native_code, 'Malayalam')}\n"
         f"📚 **Target Language:** {LANGUAGES.get(target_code, 'German')}\n"
         f"🔄 **Mode:** {mode} Mode\n"
-        f"🔊 **Voice:** {voice}\n\n"
+        f"🔊 **Voice Audio:** {voice}\n\n"
         "👇 *Tap a button below to customize:*"
     )
 
@@ -95,6 +134,7 @@ def get_settings_keyboard(context: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📚 Change Target Language", callback_data="page_target_lang")],
         [InlineKeyboardButton(mode_switch, callback_data="toggle_mode")],
         [InlineKeyboardButton(voice_status, callback_data="toggle_voice")],
+        [InlineKeyboardButton("⭐️ Buy VIP Access (Telegram Stars)", callback_data="buy_stars_btn")],
     ]
     return InlineKeyboardMarkup(keyboard)
 
@@ -109,16 +149,27 @@ def get_language_picker_keyboard(action_type: str):
     keyboard.append([InlineKeyboardButton("🔙 Back to Settings", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(keyboard)
 
-def safe_translate(text: str, target: str, source: str = "auto") -> str:
-    # 1. Google Translator with Error 500 filter
+def robust_translate(text: str, target: str, source: str = "auto") -> str:
+    # 1. Direct Google API
+    try:
+        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source}&tl={target}&dt=t&q={urllib.parse.quote(text)}"
+        resp = requests.get(url, timeout=5)
+        if resp.status_code == 200:
+            data = resp.json()
+            if data and data[0]:
+                return "".join([part[0] for part in data[0] if part[0]]).strip()
+    except Exception as e:
+        logging.warning(f"Direct Google API error: {e}")
+
+    # 2. deep-translator GoogleTranslator fallback
     try:
         res = GoogleTranslator(source="auto", target=target).translate(text)
         if res and "Error 500" not in res and "<html>" not in res.lower():
             return res.strip()
     except Exception as e:
-        logging.warning(f"GoogleTranslator error: {e}")
+        logging.warning(f"GoogleTranslator fallback error: {e}")
 
-    # 2. MyMemory Translator Fallback
+    # 3. MyMemory fallback
     try:
         src = source if source != "auto" else "en"
         res = MyMemoryTranslator(source=src, target=target).translate(text)
@@ -129,12 +180,40 @@ def safe_translate(text: str, target: str, source: str = "auto") -> str:
 
     return text
 
+# Telegram Stars Payment Handlers
+async def send_stars_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
+    prices = [LabeledPrice("⭐️ VIP Lifetime Access", 25)]
+    await context.bot.send_invoice(
+        chat_id=chat_id,
+        title="⭐️ VIP Lifetime Membership",
+        description="Unlock priority fast translation & lifetime VIP access!",
+        payload="vip_stars_payment",
+        currency="XTR",
+        prices=prices,
+        provider_token=""
+    )
+
+async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await send_stars_invoice(context, update.effective_chat.id)
+
+async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    query = update.pre_checkout_query
+    if query.invoice_payload == "vip_stars_payment":
+        await query.answer(ok=True)
+    else:
+        await query.answer(ok=False, error_message="Payment validation failed.")
+
+async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text("🎉 **Thank you!** Your VIP Access is now active. ⭐️", parse_mode="Markdown")
+
+# Commands
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user_data(context)
     welcome = (
         "👋 **Welcome to TranslateMate!**\n\n"
-        "💬 Send me any text in any language, and I will translate it instantly!\n"
-        "⚙️ Use `/settings` to change target language or toggle voice audio."
+        "💬 Send any word or sentence to translate instantly.\n"
+        "⚙️ Use `/settings` to change target language or toggle voice audio.\n"
+        "⭐️ Use `/buy` to support with Telegram Stars!"
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
     await update.message.reply_text(
@@ -170,7 +249,9 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user_data(context)
     data = query.data
 
-    if data == "back_to_settings":
+    if data == "buy_stars_btn":
+        await send_stars_invoice(context, query.message.chat_id)
+    elif data == "back_to_settings":
         await query.edit_message_text(
             get_settings_text(context),
             reply_markup=get_settings_keyboard(context),
@@ -233,16 +314,16 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.chat.send_action("typing")
 
-    translated = safe_translate(user_text, target=target_lang, source=native_lang)
+    translated = robust_translate(user_text, target=target_lang, source=native_lang)
 
     if mode == "Learning":
-        reply_body = f"🔤 **[{target_name}]**\n\n{translated}\n\n💡 *Learning Tip:* Practice pronunciation by listening to the audio note below."
+        reply_body = f"🔤 **[{target_name}]**\n\n{translated}\n\n💡 *Learning Tip:* Listen to pronunciation & practice aloud!"
     else:
         reply_body = f"🔤 **[{target_name}]**\n\n{translated}"
 
     await update.message.reply_text(reply_body, parse_mode="Markdown")
 
-    # Audio pronunciation (skip if target language isn't supported or if output is error string)
+    # Generate Voice Audio (Hebrew supported via 'iw', safe fallback for others)
     if voice_enabled and target_lang in TTS_MAP and "Error" not in translated:
         try:
             await update.message.chat.send_action("record_voice")
@@ -275,7 +356,11 @@ async def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(CommandHandler("settings", settings_command))
     application.add_handler(CommandHandler("status", status))
+    application.add_handler(CommandHandler("buy", buy_command))
+
     application.add_handler(CallbackQueryHandler(handle_callback))
+    application.add_handler(PreCheckoutQueryHandler(precheckout_handler))
+    application.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text))
 
     print("🤖 Bot starting...")
