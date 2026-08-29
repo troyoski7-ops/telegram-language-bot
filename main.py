@@ -26,7 +26,6 @@ logging.basicConfig(
     level=logging.INFO,
 )
 
-# Telegram Bot Token
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ")
 
 # Supported Languages
@@ -54,7 +53,6 @@ LANGUAGES = {
     "ur": "🇵🇰 Urdu",
 }
 
-# gTTS supported codes
 TTS_MAP = {
     "en": "en", "ml": "ml", "hi": "hi", "it": "it", "de": "de",
     "ru": "ru", "fr": "fr", "es": "es", "ar": "ar", "tr": "tr",
@@ -64,24 +62,24 @@ TTS_MAP = {
 
 def init_user_data(context: ContextTypes.DEFAULT_TYPE):
     if "native_lang" not in context.user_data:
-        context.user_data["native_lang"] = "en"
+        context.user_data["native_lang"] = "ml"
     if "target_lang" not in context.user_data:
-        context.user_data["target_lang"] = "it"
+        context.user_data["target_lang"] = "de"
     if "mode" not in context.user_data:
         context.user_data["mode"] = "Translation"
     if "voice_enabled" not in context.user_data:
         context.user_data["voice_enabled"] = True
 
 def get_settings_text(context: ContextTypes.DEFAULT_TYPE) -> str:
-    native_code = context.user_data.get("native_lang", "en")
-    target_code = context.user_data.get("target_lang", "it")
+    native_code = context.user_data.get("native_lang", "ml")
+    target_code = context.user_data.get("target_lang", "de")
     mode = context.user_data.get("mode", "Translation")
     voice = "ON 🔊" if context.user_data.get("voice_enabled", True) else "OFF 🔇"
 
     return (
         "⚙️ **Bot Settings**\n\n"
-        f"🌐 **My Language:** {LANGUAGES.get(native_code, 'English')}\n"
-        f"📚 **Target Language:** {LANGUAGES.get(target_code, 'Italian')}\n"
+        f"🌐 **My Language:** {LANGUAGES.get(native_code, 'Malayalam')}\n"
+        f"📚 **Target Language:** {LANGUAGES.get(target_code, 'German')}\n"
         f"🔄 **Mode:** {mode} Mode\n"
         f"🔊 **Voice:** {voice}\n\n"
         "👇 *Tap a button below to customize:*"
@@ -111,27 +109,32 @@ def get_language_picker_keyboard(action_type: str):
     keyboard.append([InlineKeyboardButton("🔙 Back to Settings", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(keyboard)
 
-def safe_translate(text: str, target: str) -> str:
+def safe_translate(text: str, target: str, source: str = "auto") -> str:
+    # 1. Google Translator with Error 500 filter
     try:
         res = GoogleTranslator(source="auto", target=target).translate(text)
-        if res:
-            return res
-    except Exception:
-        pass
-    try:
-        res = MyMemoryTranslator(source="auto", target=target).translate(text)
-        if res:
-            return res
+        if res and "Error 500" not in res and "<html>" not in res.lower():
+            return res.strip()
     except Exception as e:
-        logging.error(f"Translation error: {e}")
+        logging.warning(f"GoogleTranslator error: {e}")
+
+    # 2. MyMemory Translator Fallback
+    try:
+        src = source if source != "auto" else "en"
+        res = MyMemoryTranslator(source=src, target=target).translate(text)
+        if res and "MYMEMORY WARNING" not in res:
+            return res.strip()
+    except Exception as e:
+        logging.warning(f"MyMemory fallback error: {e}")
+
     return text
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user_data(context)
     welcome = (
         "👋 **Welcome to TranslateMate!**\n\n"
-        "💬 Send me any text or voice note in any language, and I will translate it instantly!\n"
-        "⚙️ Use `/settings` to change languages or voice audio options."
+        "💬 Send me any text in any language, and I will translate it instantly!\n"
+        "⚙️ Use `/settings` to change target language or toggle voice audio."
     )
     await update.message.reply_text(welcome, parse_mode="Markdown")
     await update.message.reply_text(
@@ -175,13 +178,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         )
     elif data == "page_native_lang":
         await query.edit_message_text(
-            "🌐 **Choose Your Native/Base Language:**",
+            "🌐 **Choose Your Native Language:**",
             reply_markup=get_language_picker_keyboard("setnative"),
             parse_mode="Markdown"
         )
     elif data == "page_target_lang":
         await query.edit_message_text(
-            "📚 **Choose Your Target/Learning Language:**",
+            "📚 **Choose Your Target Language:**",
             reply_markup=get_language_picker_keyboard("settarget"),
             parse_mode="Markdown"
         )
@@ -221,28 +224,30 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     init_user_data(context)
     user_text = update.message.text
+    native_lang = context.user_data["native_lang"]
     target_lang = context.user_data["target_lang"]
     mode = context.user_data["mode"]
     voice_enabled = context.user_data["voice_enabled"]
 
-    target_name = LANGUAGES.get(target_lang, "Italian")
+    target_name = LANGUAGES.get(target_lang, "German")
 
     await update.message.chat.send_action("typing")
 
-    translated = safe_translate(user_text, target_lang)
+    translated = safe_translate(user_text, target=target_lang, source=native_lang)
 
     if mode == "Learning":
-        reply_body = f"🔤 **[{target_name}]**\n\n{translated}\n\n💡 *Learning Tip:* Practice repeating the phrase out loud!"
+        reply_body = f"🔤 **[{target_name}]**\n\n{translated}\n\n💡 *Learning Tip:* Practice pronunciation by listening to the audio note below."
     else:
         reply_body = f"🔤 **[{target_name}]**\n\n{translated}"
 
     await update.message.reply_text(reply_body, parse_mode="Markdown")
 
-    if voice_enabled and target_lang in TTS_MAP:
+    # Audio pronunciation (skip if target language isn't supported or if output is error string)
+    if voice_enabled and target_lang in TTS_MAP and "Error" not in translated:
         try:
             await update.message.chat.send_action("record_voice")
             fp = io.BytesIO()
-            fp.name = "voice.mp3"
+            fp.name = "audio.mp3"
             tts = gTTS(text=translated, lang=TTS_MAP[target_lang])
             tts.write_to_fp(fp)
             fp.seek(0)
