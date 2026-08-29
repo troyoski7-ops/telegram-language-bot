@@ -2,8 +2,8 @@ import os
 import json
 import tempfile
 import threading
+import requests
 from http.server import HTTPServer, BaseHTTPRequestHandler
-from google import genai
 from gtts import gTTS
 from telegram import Update
 from telegram.ext import (
@@ -15,10 +15,14 @@ from telegram.ext import (
 )
 
 # --- CONFIGURATION ---
-GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "AQ.Ab8RN6Lyoi7IFidPrrT9AaBKhBIJu9cxasqQjpLlQ")
-TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ")
-
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+GEMINI_API_KEY = os.environ.get(
+    "GEMINI_API_KEY",
+    "AQ.Ab8RN6KFTZJe90GANt5eRpki_j0j_MeizdW-FwknVz37gBIizQ"
+)
+TELEGRAM_BOT_TOKEN = os.environ.get(
+    "TELEGRAM_BOT_TOKEN",
+    "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ"
+)
 
 # Simple web server to keep Render service alive
 class SimpleHandler(BaseHTTPRequestHandler):
@@ -55,12 +59,25 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
     try:
-        response = ai_client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt
-        )
-        reply_text = response.text
-        await update.message.reply_text(reply_text)
+        # Direct REST API call bypassing SDK auth restrictions
+        url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        headers = {"Content-Type": "application/json"}
+        payload = {
+            "contents": [{
+                "parts": [{"text": prompt}]
+            }]
+        }
+        
+        response = requests.post(url, headers=headers, json=payload)
+        data = response.json()
+
+        if "candidates" in data and data["candidates"]:
+            reply_text = data["candidates"][0]["content"]["parts"][0]["text"]
+            await update.message.reply_text(reply_text)
+        elif "error" in data:
+            await update.message.reply_text(f"API Error: {data['error'].get('message', 'Unknown error')}")
+        else:
+            await update.message.reply_text("Could not generate a response.")
 
         # Generate audio pronunciation
         try:
