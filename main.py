@@ -1,6 +1,8 @@
 import os
 import json
 import tempfile
+import threading
+from http.server import HTTPServer, BaseHTTPRequestHandler
 from datetime import datetime
 from google import genai
 from gTTS import gTTS
@@ -16,12 +18,25 @@ from telegram.ext import (
     filters,
 )
 
-# --- PASTE YOUR 2 KEYS HERE ---
-GEMINI_API_KEY = AQ.Ab8RN6Lyoi7IFidPrrT9AaBKhBIJu9cxasqQjpLlOQqMpXMXtg
-TELEGRAM_BOT_TOKEN =8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ
+# --- YOUR KEYS CONFIGURED ---
+GEMINI_API_KEY = "AQ.Ab8RN6Lyoi7IFidPrrT9AaBKhBIJu9cxasqQjpLlOQqMpXMXtg"
+TELEGRAM_BOT_TOKEN = "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ"
 
 DAILY_FREE_MESSAGES = 10
 VIP_PRICE_STARS = 50
+
+# --- DUMMY HTTP SERVER FOR RENDER HEALTH CHECKS ---
+class SimpleWebServer(BaseHTTPRequestHandler):
+    def do_GET(self):
+        self.send_response(200)
+        self.send_header("Content-type", "text/plain")
+        self.end_headers()
+        self.wfile.write(b"Bot is alive and running!")
+
+def run_web_server():
+    port = int(os.environ.get("PORT", 10000))
+    server = HTTPServer(("0.0.0.0", port), SimpleWebServer)
+    server.serve_forever()
 
 client = genai.Client(api_key=GEMINI_API_KEY)
 ALL_TTS_LANGS = gtts.lang.tts_langs()
@@ -47,7 +62,7 @@ def get_user_record(user_id):
     if user_id not in USERS_DB:
         USERS_DB[user_id] = {
             "native": "Malayalam",
-            "target": "German",
+            "target": "Russian",
             "is_vip": False,
             "usage_date": today,
             "messages_today": 0
@@ -240,7 +255,10 @@ async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
             pass
 
 def main():
-    print("🚀 Starting Bot Server with All Global & Indian Languages...")
+    print("🚀 Starting Web Healthcheck Server...")
+    threading.Thread(target=run_web_server, daemon=True).start()
+
+    print("🚀 Starting Telegram Bot Polling...")
     app = ApplicationBuilder().token(TELEGRAM_BOT_TOKEN).build()
     app.add_handler(CommandHandler(["start", "languages", "vip"], start))
     app.add_handler(CallbackQueryHandler(handle_callback))
