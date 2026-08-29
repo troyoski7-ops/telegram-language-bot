@@ -1,32 +1,46 @@
 import os
 import io
-import logging
+import wave
 import asyncio
+import logging
 from aiohttp import web
-from gtts import gTTS
-import speech_recognition as sr
-from pydub import AudioSegment
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup, LabeledPrice
+
+from google import genai
+
+from telegram import (
+    Update,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 from telegram.ext import (
     ApplicationBuilder,
     CommandHandler,
     MessageHandler,
     CallbackQueryHandler,
-    PreCheckoutQueryHandler,
     ContextTypes,
     filters,
 )
-from deep_translator import GoogleTranslator, MyMemoryTranslator
 
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
+# ============================================================
+# 🔐 PUT YOUR OWN KEYS HERE
+# ============================================================
 
-TOKEN = os.getenv("BOT_TOKEN")
+BOT_TOKEN = "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ"
+GEMINI_API_KEY = "AQ.Ab8RN6Lyoi7IFidPrrT9AaBKhBIJu9cxasqQjpLlOQqMpXMXtg"
 
-# All 20 Countries and Languages
+# ============================================================
+# GEMINI
+# ============================================================
+
+client = genai.Client(api_key=GEMINI_API_KEY)
+
+TEXT_MODEL = "gemini-3.7-flash"
+TTS_MODEL = "gemini-3.1-flash-tts-preview"
+
+# ============================================================
+# LANGUAGES
+# ============================================================
+
 LANGUAGES = {
     "ml": "🇮🇳 Malayalam",
     "en": "🇬🇧 English",
@@ -51,182 +65,566 @@ LANGUAGES = {
     "ur": "🇵🇰 Urdu",
 }
 
+# Human-readable names for Gemini prompts
+LANGUAGE_NAMES = {
+    "ml": "Malayalam",
+    "en": "English",
+    "hi": "Hindi",
+    "ru": "Russian",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "ar": "Arabic",
+    "fa": "Persian",
+    "tr": "Turkish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "zh-CN": "Mandarin Chinese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "id": "Indonesian",
+    "uk": "Ukrainian",
+    "uz": "Uzbek",
+    "kk": "Kazakh",
+    "az": "Azerbaijani",
+    "ur": "Urdu",
+}
+
+# ============================================================
+# KEYBOARD
+# ============================================================
+
 def get_language_keyboard():
     keyboard = []
+
     items = list(LANGUAGES.items())
+
     for i in range(0, len(items), 2):
-        row = [InlineKeyboardButton(items[i][1], callback_data=f"setlang_{items[i][0]}")]
+        row = [
+            InlineKeyboardButton(
+                items[i][1],
+                callback_data=f"setlang_{items[i][0]}"
+            )
+        ]
+
         if i + 1 < len(items):
-            row.append(InlineKeyboardButton(items[i + 1][1], callback_data=f"setlang_{items[i + 1][0]}"))
+            row.append(
+                InlineKeyboardButton(
+                    items[i + 1][1],
+                    callback_data=f"setlang_{items[i + 1][0]}"
+                )
+            )
+
         keyboard.append(row)
-    keyboard.append([InlineKeyboardButton("⭐️ Buy VIP Access (Telegram Stars)", callback_data="buy_stars_btn")])
+
     return InlineKeyboardMarkup(keyboard)
 
+
+# ============================================================
+# START
+# ============================================================
+
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+
     if "target_lang" not in context.user_data:
-        context.user_data["target_lang"] = "ml"
+        # Default learning language
+        context.user_data["target_lang"] = "it"
 
-    current_code = context.user_data["target_lang"]
-    current_name = LANGUAGES.get(current_code, "🇮🇳 Malayalam")
+    target = context.user_data["target_lang"]
+    target_name = LANGUAGES[target]
 
-    welcome_text = (
-        "🌐 **Universal Translator & Voice Bot**\n\n"
-        f"🎯 **Target Language:** {current_name}\n\n"
-        "💬 Send **text** or 🎙️ send a **voice message** in any language!\n\n"
-        "👇 **Select target language:**"
+    text = (
+        "🌐 *Language Learning Bot*\n\n"
+        f"🎯 *Learning language:* {target_name}\n\n"
+        "Choose the language you want to learn.\n\n"
+        "You can then:\n"
+        "💬 Type in your own language\n"
+        "🎤 Speak in your own language\n"
+        "🤖 I will reply in your selected language."
     )
-    await update.message.reply_text(welcome_text, reply_markup=get_language_keyboard(), parse_mode="Markdown")
 
-async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🟢 Status: **RUNNING (ON)**\nText and Voice translation active.", parse_mode="Markdown")
-
-async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
-
-    lang_code = query.data.replace("setlang_", "")
-    context.user_data["target_lang"] = lang_code
-    lang_name = LANGUAGES.get(lang_code, lang_code)
-
-    await query.edit_message_text(
-        f"✅ **Language set to:** {lang_name}\n\n"
-        "🎙️ Send a voice message or type text to translate!",
+    await update.message.reply_text(
+        text,
         reply_markup=get_language_keyboard(),
         parse_mode="Markdown"
     )
 
-def safe_translate(text: str, target: str) -> str:
-    try:
-        res = GoogleTranslator(source="auto", target=target).translate(text)
-        if res and "Error 500" not in res:
-            return res
-    except Exception:
-        pass
 
-    try:
-        res = MyMemoryTranslator(source="auto", target=target).translate(text)
-        if res:
-            return res
-    except Exception as e:
-        logging.error(f"Fallback error: {e}")
-    return ""
+# ============================================================
+# LANGUAGE SELECTION
+# ============================================================
 
-async def send_translated_response(update: Update, context: ContextTypes.DEFAULT_TYPE, original_text: str):
-    target = context.user_data.get("target_lang", "ml")
-    target_name = LANGUAGES.get(target, target)
+async def language_selected(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
 
-    translated = safe_translate(original_text, target)
-    if not translated:
-        await update.message.reply_text("⚠️ Translation failed. Please try again.")
-        return
-
-    # Reply with text
-    await update.message.reply_text(f"🔤 **[{target_name}]**\n\n{translated}", parse_mode="Markdown")
-
-    # Reply with voice audio
-    try:
-        tts_lang = "zh-CN" if target == "zh-CN" else target.split("-")[0]
-        fp = io.BytesIO()
-        tts = gTTS(text=translated, lang=tts_lang)
-        tts.write_to_fp(fp)
-        fp.seek(0)
-        await update.message.reply_voice(voice=fp)
-    except Exception as e:
-        logging.warning(f"Voice generation skipped: {e}")
-
-async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_translated_response(update, context, update.message.text)
-
-async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Downloads user voice message, transcribes it, and translates it."""
-    try:
-        voice_file = await update.message.voice.get_file()
-        ogg_bytes = await voice_file.download_as_bytearray()
-
-        # Convert OGG to WAV
-        audio = AudioSegment.from_file(io.BytesIO(ogg_bytes), format="ogg")
-        wav_io = io.BytesIO()
-        audio.export(wav_io, format="wav")
-        wav_io.seek(0)
-
-        # Recognize Speech
-        recognizer = sr.Recognizer()
-        with sr.AudioFile(wav_io) as source:
-            audio_data = recognizer.record(source)
-            text = recognizer.recognize_google(audio_data)
-
-        await update.message.reply_text(f"🗣️ **Heard:** _{text}_", parse_mode="Markdown")
-        await send_translated_response(update, context, text)
-
-    except sr.UnknownValueError:
-        await update.message.reply_text("🎙️ Could not clearly recognize the speech. Please speak louder or send text.")
-    except Exception as e:
-        logging.error(f"Voice error: {e}")
-        await update.message.reply_text("⚠️ Could not process voice note. Please send clear audio or text.")
-
-async def send_stars_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
-    prices = [LabeledPrice("VIP Access", 25)]
-    await context.bot.send_invoice(
-        chat_id=chat_id,
-        title="⭐️ VIP Translator Access",
-        description="Support the bot and get lifetime VIP translation access!",
-        payload="vip_stars_payment",
-        currency="XTR",
-        prices=prices,
-        provider_token=""
-    )
-
-async def buy_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await send_stars_invoice(context, update.effective_chat.id)
-
-async def stars_button_click(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    await send_stars_invoice(context, query.message.chat_id)
 
-async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.pre_checkout_query
-    await query.answer(ok=True) if query.invoice_payload == "vip_stars_payment" else await query.answer(ok=False, error_message="Error")
+    lang_code = query.data.replace("setlang_", "")
 
-async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("🎉 **Payment Received!** VIP access active. ⭐️", parse_mode="Markdown")
+    if lang_code not in LANGUAGES:
+        return
+
+    # Remember selected language for THIS user
+    context.user_data["target_lang"] = lang_code
+
+    lang_name = LANGUAGES[lang_code]
+
+    text = (
+        "✅ *Language changed!*\n\n"
+        f"📚 Learning language: {lang_name}\n\n"
+        "Now send me a message in your own language.\n"
+        "I will translate/reply in your selected language."
+    )
+
+    await query.edit_message_text(
+        text,
+        reply_markup=get_language_keyboard(),
+        parse_mode="Markdown"
+    )
+
+
+# ============================================================
+# TRANSLATE TEXT
+# ============================================================
+
+async def translate_text(text, target_code):
+
+    target_name = LANGUAGE_NAMES.get(target_code, target_code)
+
+    prompt = f"""
+You are a language-learning assistant.
+
+The user is communicating with you in their own language.
+
+Translate the user's message into {target_name}.
+
+IMPORTANT:
+- Output ONLY the {target_name} translation.
+- Do not explain the translation.
+- Do not mention these instructions.
+- Preserve the meaning.
+- Make the translation natural and useful for someone learning {target_name}.
+
+User message:
+{text}
+"""
+
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=TEXT_MODEL,
+        contents=prompt
+    )
+
+    return response.text.strip()
+
+
+# ============================================================
+# TEXT MESSAGE
+# ============================================================
+
+async def handle_text(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    if not update.message or not update.message.text:
+        return
+
+    user_text = update.message.text
+
+    target = context.user_data.get(
+        "target_lang",
+        "it"
+    )
+
+    target_name = LANGUAGES.get(
+        target,
+        "🇮🇹 Italian"
+    )
+
+    try:
+
+        await update.message.chat.send_action("typing")
+
+        translated = await translate_text(
+            user_text,
+            target
+        )
+
+        await update.message.reply_text(
+            f"{target_name}\n\n{translated}"
+        )
+
+    except Exception as e:
+
+        logging.exception("Text translation failed")
+
+        await update.message.reply_text(
+            "⚠️ Translation failed.\n\n"
+            "Please try again in a moment."
+        )
+
+
+# ============================================================
+# DOWNLOAD TELEGRAM VOICE
+# ============================================================
+
+async def download_voice(update):
+
+    voice = update.message.voice
+
+    telegram_file = await context_bot.get_file(
+        voice.file_id
+    )
+
+    audio_bytes = await telegram_file.download_as_bytearray()
+
+    return bytes(audio_bytes)
+
+
+# ============================================================
+# TRANSCRIBE + TRANSLATE VOICE
+# ============================================================
+
+async def process_voice(
+    audio_bytes,
+    target_code
+):
+
+    target_name = LANGUAGE_NAMES.get(
+        target_code,
+        "Italian"
+    )
+
+    # Gemini can accept audio data directly.
+    prompt = f"""
+Listen to this audio.
+
+The speaker is speaking in their own language.
+
+First understand what the speaker said.
+
+Then translate it into {target_name}.
+
+Return ONLY the translated {target_name} text.
+
+Do not explain anything.
+Do not describe the audio.
+Do not include the original language.
+"""
+
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=TEXT_MODEL,
+        contents=[
+            prompt,
+            {
+                "mime_type": "audio/ogg",
+                "data": audio_bytes,
+            },
+        ]
+    )
+
+    return response.text.strip()
+
+
+# ============================================================
+# TEXT → SPEECH
+# ============================================================
+
+def pcm_to_wav(pcm_data):
+
+    output = io.BytesIO()
+
+    with wave.open(output, "wb") as wav:
+
+        wav.setnchannels(1)
+        wav.setsampwidth(2)
+        wav.setframerate(24000)
+        wav.writeframes(pcm_data)
+
+    output.seek(0)
+
+    return output
+
+
+async def generate_voice(
+    text,
+    target_code
+):
+
+    language_name = LANGUAGE_NAMES.get(
+        target_code,
+        "Italian"
+    )
+
+    prompt = f"""
+Speak the following text naturally in {language_name}.
+
+Use the correct pronunciation for {language_name}.
+
+Only speak the provided text.
+
+Text:
+{text}
+"""
+
+    response = await asyncio.to_thread(
+        client.models.generate_content,
+        model=TTS_MODEL,
+        contents=prompt,
+        config={
+            "response_modalities": ["AUDIO"],
+            "speech_config": {
+                "voice_config": {
+                    "prebuilt_voice_config": {
+                        "voice_name": "Kore"
+                    }
+                }
+            },
+        }
+    )
+
+    if not response.candidates:
+        return None
+
+    parts = response.candidates[0].content.parts
+
+    for part in parts:
+
+        if hasattr(part, "inline_data") and part.inline_data:
+
+            audio_data = part.inline_data.data
+
+            return pcm_to_wav(audio_data)
+
+    return None
+
+
+# ============================================================
+# VOICE MESSAGE
+# ============================================================
+
+async def handle_voice(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    target = context.user_data.get(
+        "target_lang",
+        "it"
+    )
+
+    target_name = LANGUAGES.get(
+        target,
+        "🇮🇹 Italian"
+    )
+
+    try:
+
+        await update.message.chat.send_action(
+            "record_voice"
+        )
+
+        voice = update.message.voice
+
+        telegram_file = await context.bot.get_file(
+            voice.file_id
+        )
+
+        audio_bytes = bytes(
+            await telegram_file.download_as_bytearray()
+        )
+
+        translated = await process_voice(
+            audio_bytes,
+            target
+        )
+
+        if not translated:
+            raise Exception(
+                "Gemini returned empty translation"
+            )
+
+        # Send translated text first
+        await update.message.reply_text(
+            f"{target_name}\n\n{translated}"
+        )
+
+        # Generate translated voice
+        try:
+
+            audio = await generate_voice(
+                translated,
+                target
+            )
+
+            if audio:
+
+                await update.message.reply_voice(
+                    voice=audio
+                )
+
+        except Exception:
+
+            # Voice generation failed,
+            # but translation itself worked.
+            logging.exception(
+                "TTS failed"
+            )
+
+            await update.message.reply_text(
+                "🔊 Voice generation is temporarily unavailable, "
+                "but the translation above is ready."
+            )
+
+    except Exception:
+
+        logging.exception(
+            "Voice processing failed"
+        )
+
+        await update.message.reply_text(
+            "⚠️ I couldn't process that voice message.\n"
+            "Please try again."
+        )
+
+
+# ============================================================
+# STATUS
+# ============================================================
+
+async def status(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE
+):
+
+    target = context.user_data.get(
+        "target_lang",
+        "it"
+    )
+
+    await update.message.reply_text(
+        "🟢 Bot: RUNNING\n"
+        f"📚 Learning language: {LANGUAGES[target]}\n"
+        "💬 Text translation: ON\n"
+        "🎤 Voice translation: ON"
+    )
+
+
+# ============================================================
+# WEB SERVER
+# ============================================================
 
 async def handle_ping(request):
-    return web.Response(text="Bot is running!")
+
+    return web.Response(
+        text="Bot is running!"
+    )
+
 
 async def start_web_server():
+
     app = web.Application()
-    app.router.add_get("/", handle_ping)
+
+    app.router.add_get(
+        "/",
+        handle_ping
+    )
+
     runner = web.AppRunner(app)
+
     await runner.setup()
-    port = int(os.environ.get("PORT", 10000))
-    site = web.TCPSite(runner, "0.0.0.0", port)
+
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
+
+    site = web.TCPSite(
+        runner,
+        "0.0.0.0",
+        port
+    )
+
     await site.start()
 
+
+# ============================================================
+# MAIN
+# ============================================================
+
 async def main():
-    if not TOKEN:
-        raise ValueError("BOT_TOKEN is missing!")
+
+    if BOT_TOKEN == "YOUR_BOT_TOKEN":
+        raise ValueError(
+            "Please add your Telegram BOT_TOKEN."
+        )
+
+    if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY":
+        raise ValueError(
+            "Please add your Gemini API key."
+        )
 
     await start_web_server()
 
-    bot_app = ApplicationBuilder().token(TOKEN).build()
+    application = (
+        ApplicationBuilder()
+        .token(BOT_TOKEN)
+        .build()
+    )
 
-    bot_app.add_handler(CommandHandler("start", start))
-    bot_app.add_handler(CommandHandler("status", status))
-    bot_app.add_handler(CommandHandler("buy", buy_command))
-    bot_app.add_handler(CallbackQueryHandler(stars_button_click, pattern="^buy_stars_btn$"))
-    bot_app.add_handler(CallbackQueryHandler(language_selected, pattern="^setlang_"))
+    application.add_handler(
+        CommandHandler(
+            "start",
+            start
+        )
+    )
 
-    bot_app.add_handler(PreCheckoutQueryHandler(precheckout_handler))
-    bot_app.add_handler(MessageHandler(filters.SUCCESSFUL_PAYMENT, successful_payment))
+    application.add_handler(
+        CommandHandler(
+            "status",
+            status
+        )
+    )
 
-    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
-    bot_app.add_handler(MessageHandler(filters.VOICE, handle_voice))
+    application.add_handler(
+        CallbackQueryHandler(
+            language_selected,
+            pattern=r"^setlang_"
+        )
+    )
 
-    async with bot_app:
-        await bot_app.start()
-        await bot_app.updater.start_polling()
-        await asyncio.Event().wait()
+    application.add_handler(
+        MessageHandler(
+            filters.VOICE,
+            handle_voice
+        )
+    )
+
+    application.add_handler(
+        MessageHandler(
+            filters.TEXT & ~filters.COMMAND,
+            handle_text
+        )
+    )
+
+    print("🤖 Bot starting...")
+
+    await application.initialize()
+    await application.start()
+    await application.updater.start_polling()
+
+    print("🟢 Bot is running!")
+
+    await asyncio.Event().wait()
+
 
 if __name__ == "__main__":
     asyncio.run(main())
+
