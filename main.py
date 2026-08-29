@@ -24,10 +24,8 @@ TELEGRAM_BOT_TOKEN = os.environ.get(
     "8979035511:AAHGkERqUcEQunaF3eTwkOMLNjr1x33rAzs"
 )
 
-# Global bot state (ON by default)
 BOT_ACTIVE = True
 
-# --- RENDER KEEP-ALIVE SERVER ---
 class SimpleHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         self.send_response(200)
@@ -39,7 +37,6 @@ def run_server():
     server = HTTPServer(("0.0.0.0", port), SimpleHandler)
     server.serve_forever()
 
-# --- COMMAND HANDLERS ---
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     BOT_ACTIVE = True
@@ -68,7 +65,6 @@ async def status_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         msg = "🔴 Status: *STOPPED (OFF)*\nSend `/start` to activate."
     await update.message.reply_text(msg, parse_mode="Markdown")
 
-# --- MESSAGE HANDLER ---
 async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     global BOT_ACTIVE
     if not BOT_ACTIVE:
@@ -91,8 +87,9 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         url = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent"
         headers = {
             "Content-Type": "application/json",
-            "x-goog-api-key": GEMINI_API_KEY
+            "Authorization": f"Bearer {GEMINI_API_KEY}"
         }
+
         payload = {
             "contents": [{
                 "parts": [{"text": prompt}]
@@ -110,7 +107,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         else:
             await update.message.reply_text("Could not generate a response.")
 
-        # Audio Pronunciation
         try:
             tts = gTTS(text=user_text, lang='ru')
             with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
@@ -126,7 +122,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     except Exception as e:
         await update.message.reply_text(f"Error: {str(e)}")
 
-# --- AUTO REGISTER COMMAND MENU ---
 async def post_init(application):
     commands = [
         BotCommand("start", "Turn bot ON and start translating"),
@@ -145,7 +140,6 @@ def main():
         .build()
     )
     
-    # Handlers
     app.add_handler(CommandHandler("start", start_command))
     app.add_handler(CommandHandler("stop", stop_command))
     app.add_handler(CommandHandler("status", status_command))
