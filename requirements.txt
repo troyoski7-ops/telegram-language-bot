@@ -1,8 +1,3 @@
-python-telegram-bot
-deep-translator
-gTTS
-aiohttp
-SpeechRecognition
-pydub
+pip install -U google-genai python-telegram-bot aiohttp
 
 
