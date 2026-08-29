@@ -11,6 +11,12 @@ import speech_recognition as sr
 from pydub import AudioSegment
 from deep_translator import GoogleTranslator, MyMemoryTranslator
 
+# Configure logging
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO,
+)
+
 from telegram import (
     Update,
     InlineKeyboardButton,
@@ -27,15 +33,9 @@ from telegram.ext import (
     filters,
 )
 
-# Configure logging
-logging.basicConfig(
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO,
-)
-
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ")
 
-# ----------------- CONFIGURATION -----------------
+# Configuration
 AUTO_LIMIT_USER_THRESHOLD = 500
 DAILY_FREE_LIMIT = 20
 VIP_DURATION_DAYS = 30
@@ -66,14 +66,14 @@ LANGUAGES = {
     "sv": "🇸🇪 Swedish",
     "pl": "🇵🇱 Polish",
     "ar": "🇪🇬 Arabic",
-    "fa": "🇮🇷 Persian (Farsi)",
+    "fa": "🇮🇷 Persian",
     "tr": "🇹🇷 Turkish",
     "zh-CN": "🇨🇳 Chinese",
     "ja": "🇯🇵 Japanese",
     "ko": "🇰🇷 Korean",
     "id": "🇮🇩 Indonesian",
     "uk": "🇺🇦 Ukrainian",
-    "uz": "🇺🇿 Uzbek",
+    "uz": "UZ Uzbek",
     "kk": "🇰🇿 Kazakh",
     "az": "🇦🇿 Azerbaijani",
 }
@@ -85,6 +85,16 @@ SR_MAP = {
     "pt": "pt-PT", "no": "no-NO", "sv": "sv-SE", "pl": "pl-PL", "ar": "ar-SA",
     "fa": "fa-IR", "tr": "tr-TR", "zh-CN": "zh-CN", "ja": "ja-JP", "ko": "ko-KR",
     "id": "id-ID", "uk": "uk-UA"
+}
+
+# Supported TTS Language mapping
+TTS_MAP = {
+    "en": "en", "ml": "ml", "ta": "ta", "te": "te", "kn": "kn",
+    "bn": "bn", "hi": "hi", "ur": "ur", "he": "iw", "my": "my",
+    "vi": "vi", "es": "es", "de": "de", "ru": "ru", "fr": "fr",
+    "it": "it", "pt": "pt", "no": "no", "sv": "sv", "pl": "pl",
+    "ar": "ar", "tr": "tr", "zh-CN": "zh-CN", "ja": "ja", "ko": "ko",
+    "id": "id", "uk": "uk", "fa": "fa"
 }
 
 def is_user_vip(context: ContextTypes.DEFAULT_TYPE) -> bool:
@@ -170,30 +180,37 @@ def get_language_picker_keyboard(action_type: str):
     keyboard.append([InlineKeyboardButton("🔙 Back to Settings", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(keyboard)
 
-# ==================== TRANSLATION ENGINE ====================
+# ==================== ROBUST MULTI-ENGINE TRANSLATOR ====================
 
-def fetch_google_api(text: str, target: str, source: str = "auto") -> str:
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+def query_google_dict_api(text: str, target: str, source: str = "auto") -> str:
+    url = "https://clients5.google.com/translate_a/t"
+    params = {
+        "client": "dict-chrome-ex",
+        "sl": source,
+        "tl": target,
+        "q": text,
     }
-    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source}&tl={target}&dt=t&q={urllib.parse.quote(text)}"
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
     try:
-        resp = requests.get(url, headers=headers, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and data[0]:
-                out = "".join([item[0] for item in data[0] if item and item[0]]).strip()
-                if out and out.lower() != text.lower():
-                    return out
+        r = requests.get(url, params=params, headers=headers, timeout=5)
+        if r.status_code == 200:
+            res = r.json()
+            if isinstance(res, list) and len(res) > 0:
+                if isinstance(res[0], list):
+                    return "".join([x for x in res[0] if isinstance(x, str)]).strip()
+                elif isinstance(res[0], str):
+                    return res[0].strip()
     except Exception:
         pass
     return ""
 
 def translate_universal(text: str, target: str, source: str = "auto") -> str:
-    res = fetch_google_api(text, target, source)
-    if res:
-        return res
+    # 1. Primary Chrome-Ex Google API
+    out = query_google_dict_api(text, target, source)
+    if out and out.lower() != text.lower():
+        return out
 
+    # 2. Deep-Translator Google
     try:
         res = GoogleTranslator(source="auto", target=target).translate(text)
         if res and "Error 500" not in res and res.strip().lower() != text.lower():
@@ -201,55 +218,58 @@ def translate_universal(text: str, target: str, source: str = "auto") -> str:
     except Exception:
         pass
 
+    # 3. Two-Step Bridge via English
     if target != "en":
         try:
-            english_text = fetch_google_api(text, "en", source) or GoogleTranslator(source="auto", target="en").translate(text)
-            if english_text and english_text.lower() != text.lower():
-                final_res = fetch_google_api(english_text, target, "en") or GoogleTranslator(source="en", target=target).translate(english_text)
+            eng = query_google_dict_api(text, "en", source) or GoogleTranslator(source="auto", target="en").translate(text)
+            if eng and eng.lower() != text.lower():
+                final_res = query_google_dict_api(eng, target, "en") or GoogleTranslator(source="en", target=target).translate(eng)
                 if final_res and final_res.strip().lower() != text.lower():
                     return final_res.strip()
         except Exception:
             pass
 
+    # 4. MyMemory Fallback
     try:
         src = source if source != "auto" else "en"
         res = MyMemoryTranslator(source=src, target=target).translate(text)
-        if res and "MYMEMORY WARNING" not in res and res.strip().lower() != text.lower():
+        if res and "MYMEMORY WARNING" not in res:
             return res.strip()
     except Exception:
         pass
 
     return text
 
-# ==================== UNIVERSAL TTS (INCLUDING PERSIAN / FA) ====================
+# ==================== VOICE / AUDIO ENGINE ====================
 
 def generate_voice_audio(text: str, lang_code: str) -> io.BytesIO:
-    # 1. Direct Google Voice Endpoint (Works for Persian 'fa', Tajik 'tg', etc.)
+    mapped_code = TTS_MAP.get(lang_code, lang_code)
+    
+    # 1. Google Web TTS Direct Stream
     try:
+        tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl={mapped_code}&client=tw-ob&q={urllib.parse.quote(text)}"
         headers = {"User-Agent": "Mozilla/5.0"}
-        tts_url = f"https://translate.google.com/translate_tts?ie=UTF-8&tl={lang_code}&client=tw-ob&q={urllib.parse.quote(text)}"
-        resp = requests.get(tts_url, headers=headers, timeout=5)
-        if resp.status_code == 200 and len(resp.content) > 100:
-            fp = io.BytesIO(resp.content)
+        r = requests.get(tts_url, headers=headers, timeout=6)
+        if r.status_code == 200 and len(r.content) > 100:
+            fp = io.BytesIO(r.content)
             fp.name = "audio.mp3"
             fp.seek(0)
             return fp
-    except Exception as e:
-        logging.warning(f"Web TTS error: {e}")
+    except Exception:
+        pass
 
-    # 2. Standard gTTS Fallback
+    # 2. gTTS Standard Engine
     try:
         fp = io.BytesIO()
         fp.name = "audio.mp3"
-        tts = gTTS(text=text, lang=lang_code)
+        tts = gTTS(text=text, lang=mapped_code)
         tts.write_to_fp(fp)
         fp.seek(0)
         return fp
-    except Exception as e:
-        logging.warning(f"gTTS error: {e}")
-        return None
+    except Exception:
+        pass
 
-# ==================== SPEECH RECOGNITION ====================
+    return None
 
 def recognize_audio_bytes(ogg_bytes: bytes, lang_code: str) -> str:
     try:
@@ -297,14 +317,10 @@ async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
     init_user_data(context, user_id)
-    
     expiry_date = datetime.date.today() + datetime.timedelta(days=VIP_DURATION_DAYS)
     context.user_data["vip_expiry"] = expiry_date.isoformat()
-    
     await update.message.reply_text(
-        f"🎉 **Payment Received!**\n\n"
-        f"⭐️ Your **1 Month VIP Access** is now active until **{expiry_date.strftime('%d %B %Y')}**!\n"
-        f"🚀 Enjoy unlimited translations!",
+        f"🎉 **Payment Received!**\n\n⭐️ Your **1 Month VIP Access** is now active until **{expiry_date.strftime('%d %B %Y')}**!\n🚀 Enjoy unlimited translations!",
         parse_mode="Markdown"
     )
 
@@ -342,12 +358,7 @@ async def status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data["mode"]
     voice = "ON" if context.user_data["voice_enabled"] else "OFF"
     total_users = len(REGISTERED_USERS)
-    
-    if is_user_vip(context):
-        vip_status = f"Active ⭐️ (Exp: {context.user_data.get('vip_expiry')})"
-    else:
-        vip_status = "Regular User"
-        
+    vip_status = f"Active ⭐️ (Exp: {context.user_data.get('vip_expiry')})" if is_user_vip(context) else "Regular User"
     limit_status = f"Active ({DAILY_FREE_LIMIT}/day)" if is_limit_active() else "Disabled (Free Phase)"
     
     await update.message.reply_text(
@@ -426,7 +437,6 @@ async def process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, 
     vip_active = is_user_vip(context)
     daily_count = context.user_data.get("daily_count", 0)
 
-    # Daily Limit Check
     if is_limit_active() and not vip_active and daily_count >= DAILY_FREE_LIMIT:
         limit_reached_keyboard = InlineKeyboardMarkup([
             [InlineKeyboardButton("⭐️ Get 1 Month VIP (25 Stars)", callback_data="buy_stars_btn")]
@@ -468,8 +478,8 @@ async def process_and_reply(update: Update, context: ContextTypes.DEFAULT_TYPE, 
 
     await update.message.reply_text(reply_body, parse_mode="Markdown")
 
-    # Generate Voice Audio (Supports Persian, German, Arabic, Russian, Malayalam, etc.)
-    if voice_enabled and translated != input_text:
+    # Generate Voice Audio
+    if voice_enabled:
         try:
             await update.message.chat.send_action("record_voice")
             fp = await asyncio.to_thread(generate_voice_audio, translated, target_lang)
