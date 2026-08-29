@@ -32,7 +32,7 @@ logging.basicConfig(
 
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8979035511:AAFKhUJy2mVg52MDcYMshefeNml_EJd6DUQ")
 
-# All Languages (Extended with Tajik & Hebrew/Israel)
+# All Languages
 LANGUAGES = {
     "en": "🇬🇧 English",
     "ml": "🇮🇳 Malayalam",
@@ -46,7 +46,7 @@ LANGUAGES = {
     "tg": "🇹🇯 Tajik (Tajikistan)",
     "my": "🇲🇲 Burmese",
     "vi": "🇻🇳 Vietnamese",
-    "es": "🇲🇽 Spanish (Mexican)",
+    "es": "🇲🇽 Spanish",
     "de": "🇩🇪 German",
     "ru": "🇷🇺 Russian",
     "fr": "🇫🇷 French",
@@ -68,35 +68,14 @@ LANGUAGES = {
     "az": "🇦🇿 Azerbaijani",
 }
 
-# gTTS Supported Language Codes
+# Supported TTS Language Codes
 TTS_MAP = {
-    "en": "en",
-    "ml": "ml",
-    "ta": "ta",
-    "te": "te",
-    "kn": "kn",
-    "bn": "bn",
-    "hi": "hi",
-    "ur": "ur",
-    "he": "iw",  # Hebrew gTTS code
-    "my": "my",
-    "vi": "vi",
-    "es": "es",
-    "de": "de",
-    "ru": "ru",
-    "fr": "fr",
-    "it": "it",
-    "pt": "pt",
-    "no": "no",
-    "sv": "sv",
-    "pl": "pl",
-    "ar": "ar",
-    "tr": "tr",
-    "zh-CN": "zh-CN",
-    "ja": "ja",
-    "ko": "ko",
-    "id": "id",
-    "uk": "uk",
+    "en": "en", "ml": "ml", "ta": "ta", "te": "te", "kn": "kn",
+    "bn": "bn", "hi": "hi", "ur": "ur", "he": "iw", "my": "my",
+    "vi": "vi", "es": "es", "de": "de", "ru": "ru", "fr": "fr",
+    "it": "it", "pt": "pt", "no": "no", "sv": "sv", "pl": "pl",
+    "ar": "ar", "tr": "tr", "zh-CN": "zh-CN", "ja": "ja", "ko": "ko",
+    "id": "id", "uk": "uk",
 }
 
 def init_user_data(context: ContextTypes.DEFAULT_TYPE):
@@ -149,38 +128,56 @@ def get_language_picker_keyboard(action_type: str):
     keyboard.append([InlineKeyboardButton("🔙 Back to Settings", callback_data="back_to_settings")])
     return InlineKeyboardMarkup(keyboard)
 
+def query_google_raw(text: str, target: str, source: str = "auto") -> str:
+    headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"}
+    url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source}&tl={target}&dt=t&q={urllib.parse.quote(text)}"
+    resp = requests.get(url, headers=headers, timeout=6)
+    if resp.status_code == 200:
+        data = resp.json()
+        if data and data[0]:
+            return "".join([part[0] for part in data[0] if part[0]]).strip()
+    return ""
+
 def robust_translate(text: str, target: str, source: str = "auto") -> str:
-    # 1. Direct Google API
+    # 1. Direct Attempt
     try:
-        url = f"https://translate.googleapis.com/translate_a/single?client=gtx&sl={source}&tl={target}&dt=t&q={urllib.parse.quote(text)}"
-        resp = requests.get(url, timeout=5)
-        if resp.status_code == 200:
-            data = resp.json()
-            if data and data[0]:
-                return "".join([part[0] for part in data[0] if part[0]]).strip()
+        res = query_google_raw(text, target, source)
+        if res and res != text:
+            return res
     except Exception as e:
         logging.warning(f"Direct Google API error: {e}")
 
-    # 2. deep-translator GoogleTranslator fallback
+    # 2. deep-translator GoogleTranslator
     try:
         res = GoogleTranslator(source="auto", target=target).translate(text)
-        if res and "Error 500" not in res and "<html>" not in res.lower():
+        if res and "Error 500" not in res and res != text:
             return res.strip()
     except Exception as e:
-        logging.warning(f"GoogleTranslator fallback error: {e}")
+        logging.warning(f"deep-translator error: {e}")
 
-    # 3. MyMemory fallback
+    # 3. Two-Step Bridge (Source -> English -> Target)
+    if target != "en":
+        try:
+            english_step = query_google_raw(text, "en", source) or GoogleTranslator(source="auto", target="en").translate(text)
+            if english_step:
+                final_res = query_google_raw(english_step, target, "en") or GoogleTranslator(source="en", target=target).translate(english_step)
+                if final_res:
+                    return final_res.strip()
+        except Exception as e:
+            logging.warning(f"Bridge translate error: {e}")
+
+    # 4. MyMemory Fallback
     try:
         src = source if source != "auto" else "en"
         res = MyMemoryTranslator(source=src, target=target).translate(text)
         if res and "MYMEMORY WARNING" not in res:
             return res.strip()
     except Exception as e:
-        logging.warning(f"MyMemory fallback error: {e}")
+        logging.warning(f"MyMemory error: {e}")
 
     return text
 
-# Telegram Stars Payment Handlers
+# Telegram Stars Payment
 async def send_stars_invoice(context: ContextTypes.DEFAULT_TYPE, chat_id: int):
     prices = [LabeledPrice("⭐️ VIP Lifetime Access", 25)]
     await context.bot.send_invoice(
@@ -201,7 +198,7 @@ async def precheckout_handler(update: Update, context: ContextTypes.DEFAULT_TYPE
     if query.invoice_payload == "vip_stars_payment":
         await query.answer(ok=True)
     else:
-        await query.answer(ok=False, error_message="Payment validation failed.")
+        await query.answer(ok=False, error_message="Payment error.")
 
 async def successful_payment(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text("🎉 **Thank you!** Your VIP Access is now active. ⭐️", parse_mode="Markdown")
@@ -211,7 +208,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     init_user_data(context)
     welcome = (
         "👋 **Welcome to TranslateMate!**\n\n"
-        "💬 Send any word or sentence to translate instantly.\n"
+        "💬 Send any text to translate instantly.\n"
         "⚙️ Use `/settings` to change target language or toggle voice audio.\n"
         "⭐️ Use `/buy` to support with Telegram Stars!"
     )
@@ -310,7 +307,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
     mode = context.user_data["mode"]
     voice_enabled = context.user_data["voice_enabled"]
 
-    target_name = LANGUAGES.get(target_lang, "German")
+    target_name = LANGUAGES.get(target_lang, target_lang)
 
     await update.message.chat.send_action("typing")
 
@@ -323,7 +320,6 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     await update.message.reply_text(reply_body, parse_mode="Markdown")
 
-    # Generate Voice Audio (Hebrew supported via 'iw', safe fallback for others)
     if voice_enabled and target_lang in TTS_MAP and "Error" not in translated:
         try:
             await update.message.chat.send_action("record_voice")
