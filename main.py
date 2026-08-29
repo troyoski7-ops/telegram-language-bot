@@ -48,7 +48,6 @@ LANGUAGES = {
 }
 
 def get_language_keyboard():
-    """Builds interactive language buttons in rows of two."""
     keyboard = []
     items = list(LANGUAGES.items())
     for i in range(0, len(items), 2):
@@ -59,7 +58,6 @@ def get_language_keyboard():
     return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Initial /start command with language picker."""
     if "target_lang" not in context.user_data:
         context.user_data["target_lang"] = "ml"
 
@@ -78,7 +76,6 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Handles button taps to change translation language."""
     query = update.callback_query
     await query.answer()
 
@@ -94,7 +91,6 @@ async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 async def translate_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Translates incoming text messages."""
     user_text = update.message.text
     if not user_text:
         return
@@ -104,14 +100,12 @@ async def translate_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     try:
         translated = GoogleTranslator(source="auto", target=target).translate(user_text)
         target_name = LANGUAGES.get(target, target)
-        
         response = f"🔤 **[{target_name}]**\n\n{translated}"
         await update.message.reply_text(response, parse_mode="Markdown")
     except Exception as e:
         logging.error(f"Translation error: {e}")
         await update.message.reply_text("❌ Translation failed. Please try again.")
 
-# Port-binding web server to prevent Render Web Service timeout failures
 async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
@@ -120,7 +114,7 @@ async def start_web_server():
     app.router.add_get("/", handle_ping)
     runner = web.AppRunner(app)
     await runner.setup()
-    port = int(os.environ.get("PORT", 8080))
+    port = int(os.environ.get("PORT", 10000))
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
@@ -128,10 +122,9 @@ async def main():
     if not TOKEN:
         raise ValueError("BOT_TOKEN environment variable is not set!")
 
-    # Start dummy server for Render port detection
+    # Starts port binding for Render health check
     await start_web_server()
 
-    # Build and start Telegram polling
     bot_app = ApplicationBuilder().token(TOKEN).build()
     bot_app.add_handler(CommandHandler("start", start))
     bot_app.add_handler(CallbackQueryHandler(language_selected, pattern="^setlang_"))
