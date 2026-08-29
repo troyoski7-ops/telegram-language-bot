@@ -2,3 +2,4 @@ python-telegram-bot
 deep-translator
 aiohttp
 
+
