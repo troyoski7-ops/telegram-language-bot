@@ -1,72 +1,146 @@
 import os
 import logging
-from telegram import Update
-from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
+import asyncio
+from aiohttp import web
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram.ext import (
+    ApplicationBuilder,
+    CommandHandler,
+    MessageHandler,
+    CallbackQueryHandler,
+    ContextTypes,
+    filters,
+)
 from deep_translator import GoogleTranslator
 
 # Configure logging
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    level=logging.INFO
+    level=logging.INFO,
 )
 
 # Fetch token safely from Render Environment Variables
 TOKEN = os.getenv("BOT_TOKEN")
 
-# Default target language
-DEFAULT_TARGET = "ml"  # Malayalam ('en' for English, 'de' for German, etc.)
+# All 20 Countries and Languages
+LANGUAGES = {
+    "ml": "🇮🇳 Malayalam",
+    "en": "🇬🇧 English",
+    "hi": "🇮🇳 Hindi",
+    "ru": "🇷🇺 Russian",
+    "de": "🇩🇪 German",
+    "fr": "🇫🇷 French",
+    "es": "🇪🇸 Spanish",
+    "ar": "🇪🇬 Arabic",
+    "fa": "🇮🇷 Persian",
+    "tr": "🇹🇷 Turkish",
+    "it": "🇮🇹 Italian",
+    "pt": "🇧🇷 Portuguese",
+    "zh-CN": "🇨🇳 Mandarin Chinese",
+    "ja": "🇯🇵 Japanese",
+    "ko": "🇰🇷 Korean",
+    "id": "🇮🇩 Indonesian",
+    "uk": "🇺🇦 Ukrainian",
+    "uz": "🇺🇿 Uzbek",
+    "kk": "🇰🇿 Kazakh",
+    "az": "🇦🇿 Azerbaijani",
+    "ur": "🇵🇰 Urdu",
+}
+
+def get_language_keyboard():
+    """Builds interactive language buttons in rows of two."""
+    keyboard = []
+    items = list(LANGUAGES.items())
+    for i in range(0, len(items), 2):
+        row = [InlineKeyboardButton(items[i][1], callback_data=f"setlang_{items[i][0]}")]
+        if i + 1 < len(items):
+            row.append(InlineKeyboardButton(items[i + 1][1], callback_data=f"setlang_{items[i + 1][0]}"))
+        keyboard.append(row)
+    return InlineKeyboardMarkup(keyboard)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Send instructions on bot start."""
-    help_text = (
-        "🌐 **Universal Translator Bot**\n\n"
-        "Send me text in **any language**, and I will translate it!\n\n"
-        "• Current target: **Malayalam**\n"
-        "• Change target language anytime by typing:\n"
-        "`/set en` (for English)\n"
-        "`/set ml` (for Malayalam)\n"
-        "`/set de` (for German)\n"
-        "`/set hi` (for Hindi)"
+    """Initial /start command with language picker."""
+    if "target_lang" not in context.user_data:
+        context.user_data["target_lang"] = "ml"
+
+    current_code = context.user_data["target_lang"]
+    current_name = LANGUAGES.get(current_code, "🇮🇳 Malayalam")
+
+    welcome_text = (
+        "🌐 **Universal Language Translator**\n\n"
+        f"🎯 **Active Target Language:** {current_name}\n\n"
+        "👇 **Tap a language below to set your translation output:**"
     )
-    await update.message.reply_text(help_text, parse_mode="Markdown")
+    await update.message.reply_text(
+        welcome_text,
+        reply_markup=get_language_keyboard(),
+        parse_mode="Markdown"
+    )
 
-async def set_language(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Change target language dynamically."""
-    if context.args:
-        lang_code = context.args[0].lower()
-        context.user_data["target_lang"] = lang_code
-        await update.message.reply_text(f"✅ Target language set to: `{lang_code}`", parse_mode="Markdown")
-    else:
-        await update.message.reply_text("⚠️ Please specify a language code. Example: `/set en`", parse_mode="Markdown")
+async def language_selected(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Handles button taps to change translation language."""
+    query = update.callback_query
+    await query.answer()
 
-async def translate_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Translate incoming user messages."""
+    lang_code = query.data.replace("setlang_", "")
+    context.user_data["target_lang"] = lang_code
+    lang_name = LANGUAGES.get(lang_code, lang_code)
+
+    await query.edit_message_text(
+        f"✅ **Translation language set to:** {lang_name}\n\n"
+        "💬 Now send any word or sentence in **any language** to translate it!",
+        reply_markup=get_language_keyboard(),
+        parse_mode="Markdown"
+    )
+
+async def translate_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Translates incoming text messages."""
     user_text = update.message.text
     if not user_text:
         return
 
-    target_lang = context.user_data.get("target_lang", DEFAULT_TARGET)
+    target = context.user_data.get("target_lang", "ml")
 
     try:
-        translated = GoogleTranslator(source="auto", target=target_lang).translate(user_text)
-        await update.message.reply_text(translated)
+        translated = GoogleTranslator(source="auto", target=target).translate(user_text)
+        target_name = LANGUAGES.get(target, target)
+        
+        response = f"🔤 **[{target_name}]**\n\n{translated}"
+        await update.message.reply_text(response, parse_mode="Markdown")
     except Exception as e:
-        logging.error(f"Error during translation: {e}")
-        await update.message.reply_text("❌ Translation failed. Please check the language code or try again.")
+        logging.error(f"Translation error: {e}")
+        await update.message.reply_text("❌ Translation failed. Please try again.")
 
-def main():
+# Port-binding web server to prevent Render Web Service timeout failures
+async def handle_ping(request):
+    return web.Response(text="Bot is running!")
+
+async def start_web_server():
+    app = web.Application()
+    app.router.add_get("/", handle_ping)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    port = int(os.environ.get("PORT", 8080))
+    site = web.TCPSite(runner, "0.0.0.0", port)
+    await site.start()
+
+async def main():
     if not TOKEN:
-        raise ValueError("BOT_TOKEN environment variable is missing on Render!")
+        raise ValueError("BOT_TOKEN environment variable is not set!")
 
-    app = ApplicationBuilder().token(TOKEN).build()
+    # Start dummy server for Render port detection
+    await start_web_server()
 
-    # Handlers
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("set", set_language))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_text))
+    # Build and start Telegram polling
+    bot_app = ApplicationBuilder().token(TOKEN).build()
+    bot_app.add_handler(CommandHandler("start", start))
+    bot_app.add_handler(CallbackQueryHandler(language_selected, pattern="^setlang_"))
+    bot_app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, translate_message))
 
-    print("Bot is running...")
-    app.run_polling()
+    async with bot_app:
+        await bot_app.start()
+        await bot_app.updater.start_polling()
+        await asyncio.Event().wait()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
